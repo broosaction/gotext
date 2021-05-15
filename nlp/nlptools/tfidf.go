@@ -5,14 +5,14 @@
  *  found in the LICENSE file in the root directory of this source tree.
  */
 
-package transformers
+package nlptools
 
 import (
 	"crypto/md5"
 	"encoding/hex"
 	"github.com/broosaction/gotext/tokenizers"
+	stringUtils "github.com/broosaction/gotext/utils/strings"
 
-	"log"
 	"math"
 )
 
@@ -45,22 +45,28 @@ the word is less important
 */
 // TFIDF tfidf model
 type TFIDF struct {
-	docIndex  map[string]int         // train document index in TermFreqs
-	termFreqs []map[string]int       // term frequency for each train document
-	termDocs  map[string]int         // documents number for each term in train data
-	n         int                    // number of documents in train data
-	stopWords map[string]interface{} // words to be filtered
-	tokenizer tokenizers.Tokenizer         // tokenizer, space is used as default
+	// train document index in TermFreqs
+	DocIndex  map[string]int
+	// term frequency for each train document
+	TermFreqs []map[string]int
+	// documents number for each term in train data
+	TermDocs  map[string]int
+	// number of documents in train data
+	N         int
+	// words to be filtered
+	StopWords map[string]struct{}
+	// tokenizer, space is used as default
+	Tokenizer string
 }
 
 // New new model with default
 func NewTFIDF() *TFIDF {
 	return &TFIDF{
-		docIndex:  make(map[string]int),
-		termFreqs: make([]map[string]int, 0),
-		termDocs:  make(map[string]int),
-		n:         0,
-		tokenizer: &tokenizers.WordTokenizer{},
+		DocIndex:  make(map[string]int),
+		TermFreqs: make([]map[string]int, 0),
+		TermDocs:  make(map[string]int),
+		N:         0,
+		Tokenizer: tokenizers.WordTokenizer{}.GetName(),
 	}
 }
 
@@ -68,37 +74,28 @@ func NewTFIDF() *TFIDF {
 // works well in GOLD
 func NewTokenizer(tokenizer tokenizers.Tokenizer) *TFIDF {
 	return &TFIDF{
-		docIndex:  make(map[string]int),
-		termFreqs: make([]map[string]int, 0),
-		termDocs:  make(map[string]int),
-		n:         0,
-		tokenizer: tokenizer,
+		DocIndex:  make(map[string]int),
+		TermFreqs: make([]map[string]int, 0),
+		TermDocs:  make(map[string]int),
+		N:         0,
+		Tokenizer: tokenizer.GetName(),
 	}
 }
 
 func (f *TFIDF) initStopWords() {
-	if f.stopWords == nil {
-		f.stopWords = make(map[string]interface{})
-	}
-
-	lines, err := tokenizers.ReadLines("../data/stopword")
-	if err != nil {
-		log.Printf("init stop words with error: %s", err)
-	}
-
-	for _, w := range lines {
-		f.stopWords[w] = nil
+	if f.StopWords == nil {
+		f.StopWords = stringUtils.GetStopwords()
 	}
 }
 
 // AddStopWords add stop words to be filtered
 func (f *TFIDF) AddStopWords(words ...string) {
-	if f.stopWords == nil {
-		f.stopWords = make(map[string]interface{})
+	if f.StopWords == nil {
+		f.StopWords = stringUtils.GetStopwords()
 	}
 
 	for _, word := range words {
-		f.stopWords[word] = nil
+		f.StopWords[word] = struct{}{}
 	}
 }
 
@@ -116,7 +113,7 @@ func (f *TFIDF) AddStopWordsFile(file string) (err error) {
 // AddDocs add train documents
 func (f *TFIDF) AddDocs(docs ...string) {
 	for _, doc := range docs {
-		h := hash(doc)
+		h := f.hash(doc)
 		if f.docHashPos(h) >= 0 {
 			return
 		}
@@ -126,13 +123,13 @@ func (f *TFIDF) AddDocs(docs ...string) {
 			return
 		}
 
-		f.docIndex[h] = f.n
-		f.n++
+		f.DocIndex[h] = f.N
+		f.N++
 
-		f.termFreqs = append(f.termFreqs, termFreq)
+		f.TermFreqs = append(f.TermFreqs, termFreq)
 
 		for term := range termFreq {
-			f.termDocs[term]++
+			f.TermDocs[term]++
 		}
 	}
 }
@@ -147,7 +144,7 @@ func (f *TFIDF) Cal(doc string) (weight map[string]float64) {
 	if docPos < 0 {
 		termFreq = f.termFreq(doc)
 	} else {
-		termFreq = f.termFreqs[docPos]
+		termFreq = f.TermFreqs[docPos]
 	}
 
 	docTerms := 0
@@ -155,7 +152,7 @@ func (f *TFIDF) Cal(doc string) (weight map[string]float64) {
 		docTerms += freq
 	}
 	for term, freq := range termFreq {
-		weight[term] = tfidf(freq, docTerms, f.termDocs[term], f.n)
+		weight[term] = f.tfidf(freq, docTerms, f.TermDocs[term], f.N)
 	}
 
 	return weight
@@ -164,13 +161,13 @@ func (f *TFIDF) Cal(doc string) (weight map[string]float64) {
 func (f *TFIDF) termFreq(doc string) (m map[string]int) {
 	m = make(map[string]int)
 
-	tokens := f.tokenizer.Tokenize(doc)
+	tokens := tokenizers.GetTokenizer(f.Tokenizer).Tokenize(doc)
 	if len(tokens) == 0 {
 		return
 	}
 
 	for _, term := range tokens {
-		if _, ok := f.stopWords[term]; ok {
+		if _, ok := f.StopWords[term]; ok {
 			continue
 		}
 
@@ -181,7 +178,7 @@ func (f *TFIDF) termFreq(doc string) (m map[string]int) {
 }
 
 func (f *TFIDF) docHashPos(hash string) int {
-	if pos, ok := f.docIndex[hash]; ok {
+	if pos, ok := f.DocIndex[hash]; ok {
 		return pos
 	}
 
@@ -189,16 +186,16 @@ func (f *TFIDF) docHashPos(hash string) int {
 }
 
 func (f *TFIDF) docPos(doc string) int {
-	return f.docHashPos(hash(doc))
+	return f.docHashPos(f.hash(doc))
 }
 
-func hash(text string) string {
+func (f *TFIDF) hash(text string) string {
 	h := md5.New()
 	h.Write([]byte(text))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func tfidf(termFreq, docTerms, termDocs, N int) float64 {
+func (f *TFIDF) tfidf(termFreq, docTerms, termDocs, N int) float64 {
 	tf := float64(termFreq) / float64(docTerms)
 	idf := math.Log(float64(1+N) / (1 + float64(termDocs)))
 	return tf * idf
